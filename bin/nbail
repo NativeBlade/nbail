@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# nbail: run a NativeBlade app inside Docker, in the spirit of Laravel Sail.
+# Run it from the project root: ./vendor/bin/nbail <command>
+set -e
+
+SERVICE="nativeblade"
+APP_USER="nbail"
+
+if ! command -v docker >/dev/null 2>&1; then
+    echo "Docker is not installed. Install Docker Desktop (or Docker Engine) first." >&2
+    exit 1
+fi
+
+if ! docker info >/dev/null 2>&1; then
+    echo "Docker is not running. Start Docker and try again." >&2
+    exit 1
+fi
+
+if [ ! -f compose.yaml ]; then
+    echo "No compose.yaml in $(pwd)." >&2
+    echo "Run nbail from the project root, or create one with: php artisan nbail:install" >&2
+    exit 1
+fi
+
+export WWWUSER="${WWWUSER:-$(id -u)}"
+export WWWGROUP="${WWWGROUP:-$(id -g)}"
+export NB_PORT="${NB_PORT:-1420}"
+
+# Allocate a TTY only when attached to a terminal (pipes and CI need -T).
+TTY_FLAG=""
+if [ ! -t 0 ] || [ ! -t 1 ]; then
+    TTY_FLAG="-T"
+fi
+
+ensure_running() {
+    if ! docker compose ps --status running --services 2>/dev/null | grep -qx "$SERVICE"; then
+        echo "nbail is not running. Start it with: ./vendor/bin/nbail up -d" >&2
+        exit 1
+    fi
+}
+
+run_in_app() {
+    ensure_running
+    # shellcheck disable=SC2086
+    exec docker compose exec $TTY_FLAG -u "$APP_USER" "$SERVICE" "$@"
+}
+
+usage() {
+    cat <<EOF
+nbail: Docker development environment for NativeBlade
+
+Usage: ./vendor/bin/nbail <command> [arguments]
+
+Environment
+  up -d                  Start the container in the background
+  stop | down            Stop / remove the container
+  build --no-cache       Rebuild the image
+  shell                  Open a shell in the container
+  root-shell             Open a root shell in the container
+
+NativeBlade
+  dev                    Browser preview with hot reload on http://localhost:${NB_PORT}
+  artisan <command>      Run an Artisan command
+
+Tools
+  php | composer | node | npm | npx | cargo | rustup <arguments>
+
+Anything else is passed to "docker compose".
+EOF
+}
+
+if [ $# -eq 0 ]; then
+    usage
+    exit 0
+fi
+
+COMMAND="$1"
+shift
+
+case "$COMMAND" in
+    help|-h|--help)
+        usage
+        ;;
+    shell|bash)
+        run_in_app bash "$@"
+        ;;
+    root-shell)
+        ensure_running
+        # shellcheck disable=SC2086
+        exec docker compose exec $TTY_FLAG -u root "$SERVICE" bash "$@"
+        ;;
+    artisan|art)
+        run_in_app php artisan "$@"
+        ;;
+    dev)
+        run_in_app php artisan nativeblade:dev --platform=browser --port="$NB_PORT" "$@"
+        ;;
+    php|composer|node|npm|npx|cargo|rustup)
+        run_in_app "$COMMAND" "$@"
+        ;;
+    *)
+        exec docker compose "$COMMAND" "$@"
+        ;;
+esac

@@ -1,0 +1,42 @@
+services:
+    nativeblade:
+        build:
+            context: ./vendor/nativeblade/nbail/runtimes
+            dockerfile: Dockerfile
+            # Host network for image builds: behind a VPN (Cloudflare WARP,
+            # corporate VPNs) the bridge network's 1500 MTU silently drops
+            # large packets, which hangs apt/curl during the build.
+            network: host
+            args:
+                PHP_VERSION: '{{PHP_VERSION}}'
+                WWWGROUP: '${WWWGROUP:-1000}'
+        image: 'nbail/php-{{PHP_VERSION}}'
+        ports:
+            # Same port on both sides: Vite's HMR client connects to the port
+            # the dev server listens on, so a different host port breaks HMR.
+            - '${NB_PORT:-1420}:${NB_PORT:-1420}'
+        environment:
+            WWWUSER: '${WWWUSER:-1000}'
+            WWWGROUP: '${WWWGROUP:-1000}'
+            NB_PORT: '${NB_PORT:-1420}'
+            # Address the browser uses to poll PHP/Blade hot reload. Without it
+            # the dev server advertises the container's internal IP, which the
+            # host browser cannot reach.
+            NATIVEBLADE_HOST: '${NATIVEBLADE_HOST:-127.0.0.1}'
+        volumes:
+            - '.:/var/www/html'
+            - 'nbail-cargo-registry:/usr/local/cargo/registry'
+        networks:
+            - nbail
+
+networks:
+    nbail:
+        driver: bridge
+        driver_opts:
+            # Lower it (e.g. NBAIL_MTU=1280) when a VPN makes composer or npm
+            # hang inside the container.
+            com.docker.network.driver.mtu: '${NBAIL_MTU:-1500}'
+
+volumes:
+    nbail-cargo-registry:
+        driver: local

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -e
+
+# Give the container user the host user's uid/gid, so files created in the
+# mounted project (vendor, node_modules, builds) belong to the host user.
+if [ -n "${WWWUSER:-}" ] && [ "$WWWUSER" != "$(id -u nbail)" ]; then
+    usermod -ou "$WWWUSER" nbail
+fi
+
+if [ -n "${WWWGROUP:-}" ] && [ "$WWWGROUP" != "$(id -g nbail)" ]; then
+    groupmod -og "$WWWGROUP" nbail 2>/dev/null || true
+fi
+
+mkdir -p /home/nbail/.composer /home/nbail/.npm
+chown nbail:nbail /home/nbail /home/nbail/.composer /home/nbail/.npm
+
+if [ "$(id -u)" = "0" ]; then
+    exec gosu nbail "$@"
+fi
+
+exec "$@"
