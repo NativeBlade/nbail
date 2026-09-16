@@ -19,6 +19,9 @@ NBAIL_SOURCE="${NBAIL_SOURCE:-https://github.com/NativeBlade/nbail.git#main:runt
 NBAIL_VCS="${NBAIL_VCS:-https://github.com/NativeBlade/nbail}"
 NBAIL_CONSTRAINT="${NBAIL_CONSTRAINT:-@dev}"
 # Local checkout of nbail to install instead (for working on nbail itself).
+# The app's composer.json then points at /nbail, which only exists during this
+# script, so later Composer commands in that app fail until the repository is
+# repointed (e.g. composer config repositories.nbail vcs <url>).
 NBAIL_PATH="${NBAIL_PATH:-}"
 
 if [ -z "$NAME" ]; then

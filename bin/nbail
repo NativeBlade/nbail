@@ -39,10 +39,119 @@ ensure_running() {
     fi
 }
 
+# Use an adb server running on the host (e.g. NBAIL_ADB_SERVER=tcp:192.168.0.10:5037)
+# instead of the container's own. Every command gets it, because Artisan's
+# Android commands call adb themselves.
+EXEC_ENV=()
+if [ -n "${NBAIL_ADB_SERVER:-}" ]; then
+    EXEC_ENV+=(-e "ADB_SERVER_SOCKET=$NBAIL_ADB_SERVER")
+fi
+
+# Address a phone uses to reach the dev server (PHP/Blade hot reload). The
+# compose file only reads it when the container is created, so pass it to each
+# command too: NATIVEBLADE_HOST=192.168.1.20 ./vendor/bin/nbail dev
+if [ -n "${NATIVEBLADE_HOST:-}" ]; then
+    EXEC_ENV+=(-e "NATIVEBLADE_HOST=$NATIVEBLADE_HOST")
+fi
+
+# Pick a device when several are connected (adb reads it natively).
+if [ -n "${ANDROID_SERIAL:-}" ]; then
+    EXEC_ENV+=(-e "ANDROID_SERIAL=$ANDROID_SERIAL")
+fi
+
 run_in_app() {
     ensure_running
     # shellcheck disable=SC2086
-    exec docker compose exec $TTY_FLAG -u "$APP_USER" "$SERVICE" "$@"
+    exec docker compose exec $TTY_FLAG ${EXEC_ENV[@]+"${EXEC_ENV[@]}"} -u "$APP_USER" "$SERVICE" "$@"
+}
+
+# Like run_in_app, but returns so a command can run several steps.
+in_app() {
+    # shellcheck disable=SC2086
+    docker compose exec $TTY_FLAG ${EXEC_ENV[@]+"${EXEC_ENV[@]}"} -u "$APP_USER" "$SERVICE" "$@"
+}
+
+# Without a TTY, for reading a command's output.
+in_app_output() {
+    docker compose exec -T ${EXEC_ENV[@]+"${EXEC_ENV[@]}"} -u "$APP_USER" "$SERVICE" "$@" | tr -d '\r'
+}
+
+latest_dev_client() {
+    in_app_output sh -c 'ls -t build/android/*-preview.apk 2>/dev/null | head -n 1'
+}
+
+# Build (when needed) and install the Android dev client, then serve it.
+# A dev client only needs rebuilding when the dev server address changes, so
+# an APK already built for this host and port is reused as is.
+android_devclient() {
+    local host="" rebuild=0 arg
+    local build_args=()
+
+    for arg in "$@"; do
+        case "$arg" in
+            --rebuild) rebuild=1 ;;
+            --*) build_args+=("$arg") ;;
+            *) host="$arg" ;;
+        esac
+    done
+    host="${host:-${NATIVEBLADE_HOST:-}}"
+
+    if [ -z "$host" ]; then
+        echo "Usage: ./vendor/bin/nbail android:devclient <lan-ip> [--rebuild] [--targets=aarch64,...]" >&2
+        echo "The phone must reach this address on port ${NB_PORT} (see Platform setup in the nbail README)." >&2
+        exit 1
+    fi
+    if [[ "$host" == *"://"* ]]; then
+        echo "Pass an IP or hostname, not a URL: PHP hot reload polls http://<host>:${NB_PORT}." >&2
+        exit 1
+    fi
+
+    ensure_running
+    EXEC_ENV+=(-e "NATIVEBLADE_HOST=$host")
+
+    local url="http://${host}:${NB_PORT}"
+    local apk current=""
+    apk=$(latest_dev_client)
+    if [ -n "$apk" ]; then
+        current=$(in_app_output sh -c 'unzip -p "$1" assets/tauri.conf.json 2>/dev/null' _ "$apk" \
+            | grep -oE '"devUrl":"[^"]*"' | cut -d'"' -f4)
+    fi
+
+    if [ "$rebuild" = 0 ] && [ "${current%/}" = "$url" ]; then
+        echo "Dev client for $url already built ($apk). Skipping build and install; use --rebuild to force."
+    else
+        echo "Building the Android dev client for $url..."
+        in_app php artisan nativeblade:build android --host="$host" --port="$NB_PORT" ${build_args[@]+"${build_args[@]}"}
+
+        apk=$(latest_dev_client)
+        if [ -z "$apk" ]; then
+            echo "The build finished but no build/android/*-preview.apk was found." >&2
+            exit 1
+        fi
+
+        local devices count
+        devices=$(in_app_output adb devices | awk 'NR > 1 && $2 == "device" {print $1}')
+        count=$(printf '%s\n' "$devices" | grep -c . || true)
+
+        if [ -n "${ANDROID_SERIAL:-}" ] || [ "$count" = 1 ]; then
+            echo "Installing $apk..."
+            if ! in_app adb install -r "$apk"; then
+                echo "Install failed. If the app was installed from a build signed with another key, uninstall it first:" >&2
+                echo "  ./vendor/bin/nbail adb uninstall <app id>" >&2
+            fi
+        elif [ "$count" = 0 ]; then
+            echo "No phone connected, so $apk was not installed. Connect one with Wireless debugging:" >&2
+            echo "  ./vendor/bin/nbail adb pair <ip>:<pairing-port>" >&2
+            echo "  ./vendor/bin/nbail adb connect <ip>:<port>" >&2
+            echo "then install it: ./vendor/bin/nbail adb install -r $apk" >&2
+        else
+            echo "Several devices are connected; set ANDROID_SERIAL to pick one, then install:" >&2
+            echo "  ANDROID_SERIAL=<serial> ./vendor/bin/nbail adb install -r $apk" >&2
+        fi
+    fi
+
+    echo "Starting the dev server on $url (Ctrl+C to stop)..."
+    run_in_app php artisan nativeblade:dev --platform=browser --port="$NB_PORT"
 }
 
 usage() {
@@ -64,6 +173,15 @@ NativeBlade
 
 Tools
   php | composer | node | npm | npx | cargo | rustup <arguments>
+
+Android (after: php artisan nbail:install --android)
+  adb pair <ip>:<port>   Pair a phone with Wireless debugging (asks for the code)
+  adb connect <ip>:<port>
+  adb devices
+  artisan nativeblade:build android
+  android:devclient <lan-ip> [--rebuild] [--targets=...]
+                         Build and install the live-reload dev client (only when
+                         the address changed), then start the dev server for it
 
 Anything else is passed to "docker compose".
 EOF
@@ -95,7 +213,10 @@ case "$COMMAND" in
     dev)
         run_in_app php artisan nativeblade:dev --platform=browser --port="$NB_PORT" "$@"
         ;;
-    php|composer|node|npm|npx|cargo|rustup)
+    android:devclient)
+        android_devclient "$@"
+        ;;
+    php|composer|node|npm|npx|cargo|rustup|adb)
         run_in_app "$COMMAND" "$@"
         ;;
     *)

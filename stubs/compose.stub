@@ -7,10 +7,11 @@ services:
             # corporate VPNs) the bridge network's 1500 MTU silently drops
             # large packets, which hangs apt/curl during the build.
             network: host
+            target: '{{TARGET}}'
             args:
                 PHP_VERSION: '{{PHP_VERSION}}'
                 WWWGROUP: '${WWWGROUP:-1000}'
-        image: 'nbail/php-{{PHP_VERSION}}'
+        image: 'nbail/php-{{PHP_VERSION}}{{IMAGE_SUFFIX}}'
         ports:
             # Same port on both sides: Vite's HMR client connects to the port
             # the dev server listens on, so a different host port breaks HMR.
@@ -26,6 +27,7 @@ services:
         volumes:
             - '.:/var/www/html'
             - 'nbail-cargo-registry:/usr/local/cargo/registry'
+{{ANDROID_VOLUMES}}
         networks:
             - nbail
 
@@ -40,3 +42,4 @@ networks:
 volumes:
     nbail-cargo-registry:
         driver: local
+{{ANDROID_VOLUME_DEFINITIONS}}

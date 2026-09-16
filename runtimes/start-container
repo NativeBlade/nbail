@@ -14,6 +14,18 @@ fi
 mkdir -p /home/nbail/.composer /home/nbail/.npm
 chown nbail:nbail /home/nbail /home/nbail/.composer /home/nbail/.npm
 
+# Named volumes: the Cargo registry, and on Android setups the Gradle cache and
+# the adb keys (.android, which keeps devices paired). Docker creates a volume
+# owned by root when the path does not exist in the image, so hand the mount
+# points to the app user. Not recursive: their contents are written by that
+# user already, and a registry can hold many thousands of files.
+for dir in /usr/local/cargo/registry /var/cache/nbail/gradle /home/nbail/.android; do
+    if [ "$dir" = /usr/local/cargo/registry ] || mountpoint -q "$dir"; then
+        mkdir -p "$dir"
+        chown nbail:nbail "$dir"
+    fi
+done
+
 if [ "$(id -u)" = "0" ]; then
     exec gosu nbail "$@"
 fi
